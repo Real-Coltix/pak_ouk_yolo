@@ -1,0 +1,35 @@
+# Host-side toolchain for the RK3588 conversion pipeline
+# (export_rknn_onnx.py -> build_calib.py -> convert_rknn.py -> eval_rknn_accuracy.py).
+#
+# This is a SEPARATE environment from requirements.txt — do not merge them:
+#
+#   * Python 3.12 max. rknn-toolkit2 ships only cp36..cp312 wheels; there is no
+#     cp313 wheel, so a default `python3` on a current distro (3.13) cannot
+#     install it at all ("No matching distribution found").
+#   * numpy<=1.26.4 and torch<=2.4.0 are hard pins from rknn-toolkit2 itself,
+#     which conflicts with the numpy 2.x / onnxruntime 1.28 runtime env used by
+#     yolo_detector.py.
+#   * onnx MUST be pinned to 1.16.1. rknn-toolkit2 2.3.2 calls onnx.mapping,
+#     removed in later onnx; with onnx 1.22 (what a bare `pip install
+#     rknn-toolkit2` resolves to) load_onnx() dies with
+#     "AttributeError: module 'onnx' has no attribute 'mapping'".
+#   * Install torch from the CPU index, otherwise pip pulls the CUDA build
+#     (~2.5G) which then fails at import with a missing libcublasLt.so on a
+#     GPU-less host.
+#
+# Reproduce (uv, python 3.12 fetched to disk — NOT into a tmpfs /tmp, a
+# multi-GB venv on tmpfs is RAM and will OOM a small box):
+#
+#   uv python install 3.12
+#   uv venv --python 3.12 /root/rknn_env
+#   uv pip install --python /root/rknn_env/bin/python \
+#       --index-url https://download.pytorch.org/whl/cpu torch==2.4.0
+#   uv pip install --python /root/rknn_env/bin/python -r requirements-rknn.txt
+
+rknn-toolkit2==2.3.2
+onnx==1.16.1
+numpy==1.26.4
+onnxruntime>=1.10.0
+opencv-python>=4.5.5.64
+
+# torch==2.4.0  <- install separately from https://download.pytorch.org/whl/cpu
