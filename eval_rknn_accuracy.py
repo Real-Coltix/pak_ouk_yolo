@@ -47,7 +47,13 @@ def box_process(position, size):
     col, row = np.meshgrid(np.arange(gw), np.arange(gh))
     grid = np.concatenate((col.reshape(1, 1, gh, gw), row.reshape(1, 1, gh, gw)), 1).astype(np.float32)
     stride = np.array([size // gh, size // gw]).reshape(1, 2, 1, 1)
-    d = dfl_np(position)
+    # 4 channels = ltrb distances straight from the head (reg_max=1, DFL removed
+    # -- YOLO26). 4*reg_max channels = DFL distribution that must be reduced to
+    # an expectation first. Feeding a 4-channel tensor through dfl_np() does NOT
+    # raise: mc becomes 1, softmax over one bin is 1.0, and the expectation
+    # against arange(1)=[0] is 0, collapsing every box to zero size at its grid
+    # point. Silent garbage, so branch on the channel count.
+    d = dfl_np(position) if position.shape[1] > 4 else position
     xy1 = (grid + 0.5 - d[:, 0:2]) * stride
     xy2 = (grid + 0.5 + d[:, 2:4]) * stride
     return np.concatenate((xy1, xy2), 1)

@@ -27,11 +27,22 @@ from ultralytics.nn.modules.head import Detect
 
 
 def rknn_forward(self, x):
-    """RKNN export head: 3 branches x (box_raw, cls_sigmoid, cls_sum)."""
+    """RKNN export head: 3 branches x (box_raw, cls_sigmoid, cls_sum).
+
+    YOLO26 (end2end=True) carries two head pairs: cv2/cv3 (one-to-many, a
+    training aid) and one2one_cv2/one2one_cv3, which is what its forward pass
+    actually uses at inference. Exporting cv2/cv3 from such a model would ship
+    the wrong head -- it runs and produces plausible boxes, so the mistake is
+    invisible until accuracy is inexplicably worse than the .pt. Pick the pair
+    the model itself would use.
+    """
+    box_branch, cls_branch = ((self.one2one_cv2, self.one2one_cv3)
+                              if getattr(self, "end2end", False)
+                              else (self.cv2, self.cv3))
     y = []
     for i in range(self.nl):
-        y.append(self.cv2[i](x[i]))
-        cls = torch.sigmoid(self.cv3[i](x[i]))
+        y.append(box_branch[i](x[i]))
+        cls = torch.sigmoid(cls_branch[i](x[i]))
         cls_sum = torch.clamp(cls.sum(1, keepdim=True), 0, 1)
         y.append(cls)
         y.append(cls_sum)
@@ -70,7 +81,12 @@ def main():
     dummy = torch.zeros(1, 3, args.imgsz, args.imgsz)
     with torch.no_grad():
         outs = model(dummy)
+    e2e = getattr(head, "end2end", False)
     print(f"head: nl={nl} nc={nc} reg_max={reg_max} strides={strides}")
+    print(f"      end2end={e2e} -> exporting {'one2one_cv2/cv3' if e2e else 'cv2/cv3'}")
+    print(f"      DFL={'no (reg_max=1, YOLO26-style)' if reg_max <= 1 else 'yes'}"
+          f" -> box branch is {4 * max(reg_max, 1)} ch; decode must "
+          f"{'skip' if reg_max <= 1 else 'apply'} the softmax step")
     for n, o in zip(names, outs):
         print(f"  {n:14s} {tuple(o.shape)}")
 

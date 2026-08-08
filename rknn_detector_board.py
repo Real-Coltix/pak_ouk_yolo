@@ -143,7 +143,13 @@ class RknnYoloDetector:
         grid = np.concatenate((col.reshape(1, 1, gh, gw),
                                row.reshape(1, 1, gh, gw)), 1).astype(np.float32)
         stride = np.array([size // gh, size // gw]).reshape(1, 2, 1, 1)
-        d = cls._dfl(position)
+        # 4 канала = готовые ltrb-расстояния (reg_max=1, DFL убран — YOLO26).
+        # 4*reg_max каналов = DFL-распределение, его надо свернуть в матожидание.
+        # Прогон 4-канального тензора через _dfl() НЕ падает: mc=1, softmax по
+        # одному бину даёт 1.0, матожидание против arange(1)=[0] даёт 0 — и все
+        # боксы схлопываются в нулевой размер. Тихий мусор, поэтому ветвимся
+        # по числу каналов.
+        d = cls._dfl(position) if position.shape[1] > 4 else position
         xy1 = (grid + 0.5 - d[:, 0:2]) * stride
         xy2 = (grid + 0.5 + d[:, 2:4]) * stride
         return np.concatenate((xy1, xy2), 1)
