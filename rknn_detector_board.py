@@ -41,7 +41,18 @@ class RknnYoloDetector:
     #: для «максимум FPS» — пул из 3 инстансов с AUTO/по ядру на каждый.
     CORE_MASK = RKNNLite.NPU_CORE_0_1_2
 
-    def __init__(self, rknn_path: str, core_mask: int = None):
+    def __init__(self, rknn_path: str, core_mask: int = None, imgsz: int = None,
+                 conf: float = None, nms: float = None, classes=None):
+        # imgsz обязан совпадать с --imgsz, которым модель экспортировали;
+        # класс-атрибуты выше — только значения по умолчанию.
+        self.INPUT_SIZE = imgsz or self.INPUT_SIZE
+        self.CONF_THRESHOLD = self.CONF_THRESHOLD if conf is None else conf
+        self.NMS_THRESHOLD = self.NMS_THRESHOLD if nms is None else nms
+        # None = любой класс считается целью (верно для одноклассовой модели).
+        # Для многоклассовой передайте список нужных id, иначе детектор будет
+        # наводиться на первый попавшийся класс.
+        self.classes = None if classes is None else np.asarray(classes)
+
         self._rknn = RKNNLite()
         if self._rknn.load_rknn(rknn_path) != 0:
             raise RuntimeError(f"load_rknn failed: {rknn_path}")
@@ -73,8 +84,10 @@ class RknnYoloDetector:
         outs = self._rknn.inference(inputs=[rgb])
         outs = [np.asarray(o, dtype=np.float32) for o in outs]
 
-        boxes_xyxy, scores = self._decode(outs)
+        boxes_xyxy, scores, cls_ids = self._decode(outs, self.INPUT_SIZE)
         keep = scores >= self.CONF_THRESHOLD
+        if self.classes is not None:              # многоклассовая модель:
+            keep &= np.isin(cls_ids, self.classes)  # берём только нужные классы
         if not keep.any():
             return None
         boxes_xyxy, scores = boxes_xyxy[keep], scores[keep]
@@ -105,26 +118,31 @@ class RknnYoloDetector:
     # ---- decode (зеркало eval_rknn_accuracy.py) --------------------------
 
     @classmethod
-    def _decode(cls, outs):
-        """outs: 3*nl тензоров -> (xyxy [N,4], лучший скор [N])."""
+    def _decode(cls, outs, size):
+        """outs: 3*nl тензоров -> (xyxy [N,4], лучший скор [N], класс [N]).
+
+        Обобщённо по nl (число уровней), nc (число классов) и reg_max —
+        все три выводятся из форм тензоров, ничего не захардкожено.
+        """
         nl = len(outs) // 3
         boxes, confs = [], []
         for i in range(nl):
-            boxes.append(cls._flatten(cls._box_process(outs[3 * i])))
+            boxes.append(cls._flatten(cls._box_process(outs[3 * i], size)))
             confs.append(cls._flatten(outs[3 * i + 1]))
-        return np.concatenate(boxes), np.concatenate(confs).max(axis=-1)
+        c = np.concatenate(confs)
+        return np.concatenate(boxes), c.max(axis=-1), c.argmax(axis=-1)
 
     @staticmethod
     def _flatten(a):
         return a.transpose(0, 2, 3, 1).reshape(-1, a.shape[1])
 
     @classmethod
-    def _box_process(cls, position):
+    def _box_process(cls, position, size):
         gh, gw = position.shape[2:4]
         col, row = np.meshgrid(np.arange(gw), np.arange(gh))
         grid = np.concatenate((col.reshape(1, 1, gh, gw),
                                row.reshape(1, 1, gh, gw)), 1).astype(np.float32)
-        stride = np.array([cls.INPUT_SIZE // gh, cls.INPUT_SIZE // gw]).reshape(1, 2, 1, 1)
+        stride = np.array([size // gh, size // gw]).reshape(1, 2, 1, 1)
         d = cls._dfl(position)
         xy1 = (grid + 0.5 - d[:, 0:2]) * stride
         xy2 = (grid + 0.5 + d[:, 2:4]) * stride
@@ -162,10 +180,15 @@ if __name__ == "__main__":
     ap.add_argument("--model", default="best_5s_rknn_rk3588_i8.rknn")
     ap.add_argument("--cam-index", type=int, default=0)
     ap.add_argument("--frames", type=int, default=100)
+    ap.add_argument("--imgsz", type=int, default=None,
+                    help="должен совпадать с --imgsz при экспорте (по умолч. 640)")
+    ap.add_argument("--conf", type=float, default=None)
+    ap.add_argument("--classes", type=int, nargs="+", default=None,
+                    help="id классов-целей для многоклассовой модели")
     a = ap.parse_args()
 
     cap = cv2.VideoCapture(a.cam_index)
-    with RknnYoloDetector(a.model) as det:
+    with RknnYoloDetector(a.model, imgsz=a.imgsz, conf=a.conf, classes=a.classes) as det:
         t0, n, hits = time.time(), 0, 0
         while n < a.frames:
             ok, frame = cap.read()

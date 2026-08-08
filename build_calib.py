@@ -36,21 +36,21 @@ import random
 import cv2
 import numpy as np
 
-INPUT_SIZE = 640
-PAD = 114
+INPUT_SIZE = 640   # default only; override with --imgsz
+PAD = 114          # default only; override with --pad
 
 
-def letterbox_rgb(path):
+def letterbox_rgb(path, size=INPUT_SIZE, pad=PAD):
     """Identical geometry to YoloDetector._letterbox(), returned as RGB uint8."""
     img = cv2.imread(path)
     if img is None:
         return None
     h, w = img.shape[:2]
-    scale = min(INPUT_SIZE / w, INPUT_SIZE / h)
+    scale = min(size / w, size / h)
     nw, nh = int(round(w * scale)), int(round(h * scale))
     resized = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_LINEAR)
-    canvas = np.full((INPUT_SIZE, INPUT_SIZE, 3), PAD, np.uint8)
-    px, py = (INPUT_SIZE - nw) // 2, (INPUT_SIZE - nh) // 2
+    canvas = np.full((size, size, 3), pad, np.uint8)
+    px, py = (size - nw) // 2, (size - nh) // 2
     canvas[py:py + nh, px:px + nw] = resized
     return cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
 
@@ -59,7 +59,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="calib")
     ap.add_argument("--list", default="dataset.txt")
-    ap.add_argument("--n", type=int, default=300)
+    # Must match the --imgsz used by export_rknn_onnx.py. A mismatch here is
+    # silent: the quantizer happily calibrates 640x640 ranges for a 960x960
+    # model and you only see it as unexplained accuracy loss.
+    ap.add_argument("--imgsz", type=int, default=INPUT_SIZE)
+    ap.add_argument("--pad", type=int, default=PAD)
+    # Rockchip recommends 20-200 images; more lengthens quantization without
+    # necessarily improving accuracy (RKNN SDK User Guide V2.3.2, 6.2.3).
+    ap.add_argument("--n", type=int, default=200)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--globs", nargs="+", default=[
         "datasets/diverse_airborne_6/**/*.jpg",
@@ -84,7 +91,7 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     written = []
     for i, p in enumerate(picks):
-        arr = letterbox_rgb(p)
+        arr = letterbox_rgb(p, args.imgsz, args.pad)
         if arr is None:
             continue
         dst = os.path.join(args.out, f"calib_{i:04d}.npy")
